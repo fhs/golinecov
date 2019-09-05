@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
-	"math"
 	"strings"
 )
 
@@ -113,14 +112,7 @@ func textGen(w io.Writer, src []byte, boundaries []Boundary) error {
 		for len(boundaries) > 0 && boundaries[0].Offset == i {
 			b := boundaries[0]
 			if b.Start {
-				if *norm {
-					bcount = 0
-					if b.Count > 0 {
-						bcount = int(math.Floor(b.Norm*9)) + 1
-					}
-				} else {
-					bcount = b.Count
-				}
+				bcount = b.CountOrNorm()
 			} else {
 				bcount = -1
 			}

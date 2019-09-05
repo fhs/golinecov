@@ -157,6 +157,16 @@ type Boundary struct {
 	Index     int     // Order in input file.
 }
 
+func (b *Boundary) CountOrNorm() int {
+	if !*norm {
+		return b.Count
+	}
+	if b.Count <= 0 {
+		return 0
+	}
+	return int(math.Floor(b.Norm*9)) + 1
+}
+
 // Boundaries returns a Profile as a set of Boundary objects within the provided src.
 func (p *Profile) Boundaries(src []byte) (boundaries []Boundary) {
 	// Find maximum count.

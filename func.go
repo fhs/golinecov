@@ -220,7 +220,7 @@ func (f *FuncExtent) writeSource(w io.Writer, src []byte, boundaries []Boundary)
 		for len(boundaries) > 0 && boundaries[0].Offset == i {
 			b := boundaries[0]
 			if b.Start {
-				bcount = b.Count
+				bcount = b.CountOrNorm()
 			} else {
 				bcount = -1
 			}
