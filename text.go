@@ -12,9 +12,8 @@ import (
 	"strings"
 )
 
-// textOutput reads the profile data from profile and generates an HTML
-// coverage report, writing it to outfile. If outfile is empty,
-// it writes the report to a temporary file and opens it in a web browser.
+// textOutput reads the profile data from profile and generates a text
+// coverage report, writing it to writer w.
 func textOutput(w io.Writer, profile, gofile string) error {
 	profiles, err := ParseProfiles(profile)
 	if err != nil {
@@ -61,14 +60,16 @@ func textOutput(w io.Writer, profile, gofile string) error {
 		return fmt.Errorf("no coverage profile found for file %q", gofile)
 	}
 
-	for _, file := range d.Files {
-		if *showSource {
+	if *showSource {
+		for _, file := range d.Files {
 			_, err = io.WriteString(w, file.Body)
 			if err != nil {
 				return err
 			}
 			fmt.Fprintf(w, "\n")
 		}
+	}
+	for _, file := range d.Files {
 		_, err = fmt.Fprintf(w, "%5.1f%% %v\n", file.Coverage, file.Name)
 		if err != nil {
 			return err
@@ -102,7 +103,7 @@ func printLine(w io.Writer, minCount int, line string) {
 	}
 }
 
-// textGen generates an HTML coverage report with the provided filename,
+// textGen generates a text coverage report with the provided filename,
 // source code, and tokens, and writes it to the given Writer.
 func textGen(w io.Writer, src []byte, boundaries []Boundary) error {
 	bcount := -1
@@ -139,19 +140,6 @@ func textGen(w io.Writer, src []byte, boundaries []Boundary) error {
 		line = nil
 	}
 	return nil
-}
-
-// rgb returns an rgb value for the specified coverage value
-// between 0 (no coverage) and 10 (max coverage).
-func rgb(n int) string {
-	if n == 0 {
-		return "rgb(192, 0, 0)" // Red
-	}
-	// Gradient from gray to green.
-	r := 128 - 12*(n-1)
-	g := 128 + 12*(n-1)
-	b := 128 + 3*(n-1)
-	return fmt.Sprintf("rgb(%v, %v, %v)", r, g, b)
 }
 
 type templateData struct {
