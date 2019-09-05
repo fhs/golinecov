@@ -23,9 +23,7 @@ import (
 	"golang.org/x/tools/go/packages"
 )
 
-// funcOutput takes two file names as arguments, a coverage profile to read as input and an output
-// file to write ("" means to write to standard output). The function reads the profile and produces
-// as output the coverage data broken down by function, like this:
+// funcOutput reads the profile and produces as output the coverage data broken down by function, like this:
 //
 //	fmt/format.go:30:	init			100.0%
 //	fmt/format.go:57:	clearflags		100.0%
@@ -34,7 +32,8 @@ import (
 //	fmt/scan.go:1075:	advance			96.2%
 //	fmt/scan.go:1119:	doScanf			96.8%
 //	total:		(statements)			91.9%
-
+//
+// The target is a regular expression pattern that matches the function or method name.
 func funcOutput(w io.Writer, profile, target string) error {
 	targetReg, err := regexp.Compile(target)
 	if err != nil {

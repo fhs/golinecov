@@ -14,40 +14,47 @@ import (
 )
 
 const usageMessage = "" +
-	`Usage of 'go tool cover':
-Given a coverage profile produced by 'go test':
-	go test -coverprofile=c.out
+	`Usage of 'golinecov':
 
-Open a web browser displaying annotated source code:
-	go tool cover -html=c.out
+A coverage profile is produced by 'go test':
+	go test -coverprofile=go.cover
 
-Write out an HTML file instead of launching a web browser:
-	go tool cover -html=c.out -o coverage.html
+Golinecov will look for the 'go.cover' file in the current directory. If
+it's not found, it'll look for it in parent directories. The profile
+can be set explicitly with the -profile flag.
 
-Display coverage percentages to stdout for each function:
-	go tool cover -func=c.out
+Display source of a function or method matching a regular expression,
+annotated with coverage per-line:
+	golinecov -src -func '^Builder\.String$'
 
-Finally, to generate modified source code with coverage annotations
-(what go test -cover does):
-	go tool cover -mode=set -var=CoverageVariableName program.go
+Display source of a file within a package, annotated with coverage per-line:
+	golinecov -src strings/builder.go
+
+Display summary of coverage for all files in the profile:
+	golinecov
+
+Display summary of coverage for functions matching a regular expression:
+	golinecov -func '^Builder\.'
 `
 
 func usage() {
 	fmt.Fprintln(os.Stderr, usageMessage)
 	fmt.Fprintln(os.Stderr, "Flags:")
 	flag.PrintDefaults()
-	fmt.Fprintln(os.Stderr, "\n  Only one of -html, -func, or -mode may be set.")
 	os.Exit(2)
 }
 
 var (
 	profile    = flag.String("profile", "", "the coverage profile to read (searches for go.cover by default)")
-	funcOut    = flag.Bool("func", false, "output coverage profile information for a function")
+	funcOut    = flag.Bool("func", false, "output coverage profile information for a function or method")
 	norm       = flag.Bool("norm", false, "normalize count to [0, 10]")
 	showSource = flag.Bool("src", false, "show source code annotated with coverage per line")
 )
 
 func main() {
+	log.SetFlags(0)
+	log.SetPrefix("golinecov: ")
+
 	flag.Usage = usage
 	flag.Parse()
 
@@ -58,7 +65,7 @@ func main() {
 		var err error
 		*profile, err = findProfile()
 		if err != nil {
-			log.Fatalf("could not find profile: %v", err)
+			log.Fatalf("could not find profile: %v. Generate profile with 'go test -coverprofile=go.cover'.", err)
 		}
 	}
 
