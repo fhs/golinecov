@@ -149,11 +149,12 @@ func toInt(s string) int {
 // block as reported by the coverage profile. In HTML mode, it will correspond to
 // the opening or closing of a <span> tag and will be used to colorize the source
 type Boundary struct {
-	Offset int     // Location as a byte offset in the source file.
-	Start  bool    // Is this the start of a block?
-	Count  int     // Event count from the cover profile.
-	Norm   float64 // Count normalized to [0..1].
-	Index  int     // Order in input file.
+	Offset    int     // Location as a byte offset in the source file.
+	Line, Col int     // Location as line, column in the source file.
+	Start     bool    // Is this the start of a block?
+	Count     int     // Event count from the cover profile.
+	Norm      float64 // Count normalized to [0..1].
+	Index     int     // Order in input file.
 }
 
 // Boundaries returns a Profile as a set of Boundary objects within the provided src.
@@ -170,8 +171,15 @@ func (p *Profile) Boundaries(src []byte) (boundaries []Boundary) {
 
 	// boundary returns a Boundary, populating the Norm field with a normalized Count.
 	index := 0
-	boundary := func(offset int, start bool, count int) Boundary {
-		b := Boundary{Offset: offset, Start: start, Count: count, Index: index}
+	boundary := func(offset int, start bool, count int, line, col int) Boundary {
+		b := Boundary{
+			Offset: offset,
+			Line:   line,
+			Col:    col,
+			Start:  start,
+			Count:  count,
+			Index:  index,
+		}
 		index++
 		if !start || count == 0 {
 			return b
@@ -188,10 +196,10 @@ func (p *Profile) Boundaries(src []byte) (boundaries []Boundary) {
 	for si, bi := 0, 0; si < len(src) && bi < len(p.Blocks); {
 		b := p.Blocks[bi]
 		if b.StartLine == line && b.StartCol == col {
-			boundaries = append(boundaries, boundary(si, true, b.Count))
+			boundaries = append(boundaries, boundary(si, true, b.Count, b.StartLine, b.StartCol))
 		}
 		if b.EndLine == line && b.EndCol == col || line > b.EndLine {
-			boundaries = append(boundaries, boundary(si, false, 0))
+			boundaries = append(boundaries, boundary(si, false, 0, b.EndLine, b.EndCol))
 			bi++
 			continue // Don't advance through src; maybe the next block starts here.
 		}

@@ -7,22 +7,20 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
 	"io"
-	"os"
-	"os/exec"
+	"io/ioutil"
 	"path"
 	"path/filepath"
-	"runtime"
+	"regexp"
 	"strings"
 	"text/tabwriter"
+
+	"golang.org/x/tools/go/packages"
 )
 
 // funcOutput takes two file names as arguments, a coverage profile to read as input and an output
@@ -37,7 +35,12 @@ import (
 //	fmt/scan.go:1119:	doScanf			96.8%
 //	total:		(statements)			91.9%
 
-func funcOutput(profile, outputFile string) error {
+func funcOutput(w io.Writer, profile, target string) error {
+	targetReg, err := regexp.Compile(target)
+	if err != nil {
+		return err
+	}
+
 	profiles, err := ParseProfiles(profile)
 	if err != nil {
 		return err
@@ -48,21 +51,8 @@ func funcOutput(profile, outputFile string) error {
 		return err
 	}
 
-	var out *bufio.Writer
-	if outputFile == "" {
-		out = bufio.NewWriter(os.Stdout)
-	} else {
-		fd, err := os.Create(outputFile)
-		if err != nil {
-			return err
-		}
-		defer fd.Close()
-		out = bufio.NewWriter(fd)
-	}
-	defer out.Flush()
-
-	tabber := tabwriter.NewWriter(out, 1, 8, 1, '\t', 0)
-	defer tabber.Flush()
+	var bb bytes.Buffer
+	tabber := tabwriter.NewWriter(&bb, 1, 8, 1, '\t', 0)
 
 	var total, covered int64
 	for _, profile := range profiles {
@@ -71,12 +61,23 @@ func funcOutput(profile, outputFile string) error {
 		if err != nil {
 			return err
 		}
-		funcs, err := findFuncs(file)
+		funcs, err := findFuncs(file, targetReg)
 		if err != nil {
 			return err
 		}
+		src, err := ioutil.ReadFile(file)
+		if err != nil {
+			return fmt.Errorf("can't read %q: %v", fn, err)
+		}
 		// Now match up functions and profile blocks.
 		for _, f := range funcs {
+			if *showSource {
+				err = f.writeSource(w, src, profile.Boundaries(src))
+				if err != nil {
+					return err
+				}
+				fmt.Fprintf(w, "\n")
+			}
 			c, t := f.coverage(profile)
 			fmt.Fprintf(tabber, "%s:%d:\t%s\t%.1f%%\n", fn, f.startLine, f.name, percent(c, t))
 			total += t
@@ -84,12 +85,17 @@ func funcOutput(profile, outputFile string) error {
 		}
 	}
 	fmt.Fprintf(tabber, "total:\t(statements)\t%.1f%%\n", percent(covered, total))
+	tabber.Flush()
+	_, err = io.Copy(w, &bb)
+	if err != nil {
+		return err
+	}
 
 	return nil
 }
 
 // findFuncs parses the file and returns a slice of FuncExtent descriptors.
-func findFuncs(name string) ([]*FuncExtent, error) {
+func findFuncs(name string, target *regexp.Regexp) ([]*FuncExtent, error) {
 	fset := token.NewFileSet()
 	parsedFile, err := parser.ParseFile(fset, name, nil, 0)
 	if err != nil {
@@ -98,6 +104,7 @@ func findFuncs(name string) ([]*FuncExtent, error) {
 	visitor := &FuncVisitor{
 		fset:    fset,
 		name:    name,
+		target:  target,
 		astFile: parsedFile,
 	}
 	ast.Walk(visitor, visitor.astFile)
@@ -116,7 +123,8 @@ type FuncExtent struct {
 // FuncVisitor implements the visitor that builds the function position list for a file.
 type FuncVisitor struct {
 	fset    *token.FileSet
-	name    string // Name of file.
+	name    string         // Name of file.
+	target  *regexp.Regexp // Function/Method name matcher
 	astFile *ast.File
 	funcs   []*FuncExtent
 }
@@ -131,14 +139,29 @@ func (v *FuncVisitor) Visit(node ast.Node) ast.Visitor {
 		}
 		start := v.fset.Position(n.Pos())
 		end := v.fset.Position(n.End())
-		fe := &FuncExtent{
-			name:      n.Name.Name,
-			startLine: start.Line,
-			startCol:  start.Column,
-			endLine:   end.Line,
-			endCol:    end.Column,
+		name := n.Name.Name
+		if n.Recv != nil {
+			e := n.Recv.List[0].Type
+			switch ev := e.(type) {
+			case *ast.StarExpr:
+				if si, ok := ev.X.(*ast.Ident); ok {
+					name = si.Name + "." + name
+				}
+			case *ast.Ident:
+				name = ev.Name + "." + name
+			}
 		}
-		v.funcs = append(v.funcs, fe)
+
+		if v.target.MatchString(name) {
+			fe := &FuncExtent{
+				name:      name,
+				startLine: start.Line,
+				startCol:  start.Column,
+				endLine:   end.Line,
+				endCol:    end.Column,
+			}
+			v.funcs = append(v.funcs, fe)
+		}
 	}
 	return v
 }
@@ -166,13 +189,71 @@ func (f *FuncExtent) coverage(profile *Profile) (num, den int64) {
 	return covered, total
 }
 
+func (f *FuncExtent) writeSource(w io.Writer, src []byte, boundaries []Boundary) error {
+	start := -1
+	end := -1
+	lineNum := 1
+	si := 0
+	for si < len(src) {
+		if lineNum == f.startLine && start < 0 {
+			start = si
+		}
+		if lineNum == f.endLine+1 {
+			end = si
+			break
+		}
+		if src[si] == '\n' {
+			lineNum++
+		}
+		si++
+	}
+	if start < 0 {
+		return fmt.Errorf("function start not found in profile")
+	}
+	if end < 0 {
+		end = len(src)
+	}
+
+	bcount := -1
+	minCount := -1
+	var line []byte
+	for i := range src {
+		for len(boundaries) > 0 && boundaries[0].Offset == i {
+			b := boundaries[0]
+			if b.Start {
+				bcount = b.Count
+			} else {
+				bcount = -1
+			}
+			boundaries = boundaries[1:]
+		}
+		if i < start {
+			continue
+		}
+		if i >= end {
+			break
+		}
+		line = append(line, src[i])
+		if src[i] == '\n' {
+			printLine(w, minCount, string(line))
+			line = nil
+			minCount = bcount
+		} else if minCount == -1 || bcount < minCount {
+			minCount = bcount
+		}
+	}
+	if len(line) > 0 {
+		printLine(w, minCount, string(line))
+		line = nil
+	}
+	return nil
+}
+
 // Pkg describes a single package, compatible with the JSON output from 'go list'; see 'go help list'.
 type Pkg struct {
 	ImportPath string
 	Dir        string
-	Error      *struct {
-		Err string
-	}
+	Errors     []packages.Error
 }
 
 func findPkgs(profiles []*Profile) (map[string]*Pkg, error) {
@@ -191,27 +272,18 @@ func findPkgs(profiles []*Profile) (map[string]*Pkg, error) {
 		}
 	}
 
-	// Note: usually run as "go tool cover" in which case $GOROOT is set,
-	// in which case runtime.GOROOT() does exactly what we want.
-	goTool := filepath.Join(runtime.GOROOT(), "bin/go")
-	cmd := exec.Command(goTool, append([]string{"list", "-e", "-json"}, list...)...)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	stdout, err := cmd.Output()
+	cfg := &packages.Config{Mode: packages.NeedName | packages.NeedFiles}
+	pkglist, err := packages.Load(cfg, list...)
 	if err != nil {
-		return nil, fmt.Errorf("cannot run go list: %v\n%s", err, stderr.Bytes())
+		return nil, err
 	}
-	dec := json.NewDecoder(bytes.NewReader(stdout))
-	for {
-		var pkg Pkg
-		err := dec.Decode(&pkg)
-		if err == io.EOF {
-			break
+
+	for _, p := range pkglist {
+		pkgs[p.PkgPath] = &Pkg{
+			ImportPath: p.PkgPath,
+			Dir:        filepath.Dir(p.GoFiles[0]),
+			Errors:     p.Errors,
 		}
-		if err != nil {
-			return nil, fmt.Errorf("decoding go list json: %v", err)
-		}
-		pkgs[pkg.ImportPath] = &pkg
 	}
 	return pkgs, nil
 }
@@ -227,8 +299,8 @@ func findFile(pkgs map[string]*Pkg, file string) (string, error) {
 		if pkg.Dir != "" {
 			return filepath.Join(pkg.Dir, path.Base(file)), nil
 		}
-		if pkg.Error != nil {
-			return "", errors.New(pkg.Error.Err)
+		if len(pkg.Errors) != 0 {
+			return "", pkg.Errors[0]
 		}
 	}
 	return "", fmt.Errorf("did not find package for %s in go list output", file)

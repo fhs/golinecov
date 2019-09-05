@@ -5,9 +5,12 @@
 package main
 
 import (
+	"bufio"
 	"flag"
 	"fmt"
+	"log"
 	"os"
+	"path/filepath"
 )
 
 const usageMessage = "" +
@@ -38,32 +41,75 @@ func usage() {
 }
 
 var (
-	output  = flag.String("o", "", "file for output; default: stdout")
-	htmlOut = flag.String("html", "", "generate HTML representation of coverage profile")
-	funcOut = flag.String("func", "", "output coverage profile information for each function")
+	profile    = flag.String("profile", "", "the coverage profile to read (searches for go.cover by default)")
+	funcOut    = flag.Bool("func", false, "output coverage profile information for a function")
+	norm       = flag.Bool("norm", false, "normalize count to [0, 10]")
+	showSource = flag.Bool("src", false, "show source code annotated with coverage per line")
 )
-
-var profile string // The profile to read; the value of -html or -func
 
 func main() {
 	flag.Usage = usage
 	flag.Parse()
 
-	// Usage information when no arguments.
-	if flag.NFlag() == 0 && flag.NArg() == 0 {
-		flag.Usage()
+	w := bufio.NewWriter(os.Stdout)
+	defer w.Flush()
+
+	if *profile == "" {
+		var err error
+		*profile, err = findProfile()
+		if err != nil {
+			log.Fatalf("could not find profile: %v", err)
+		}
 	}
 
-	// Output HTML or function coverage information.
-	var err error
-	if *htmlOut != "" {
-		err = htmlOutput(profile, *output)
-	} else {
-		err = funcOutput(profile, *output)
+	if *funcOut {
+		var err error
+		if flag.NArg() == 0 {
+			err = funcOutput(w, *profile, ".")
+		} else {
+			err = funcOutput(w, *profile, flag.Arg(0))
+		}
+		if err != nil {
+			log.Fatalf("%v\n", err)
+		}
+		return
 	}
 
+	if flag.NArg() == 0 {
+		err := textOutput(w, *profile, "")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "cover: %v\n", err)
+			os.Exit(2)
+		}
+		return
+	}
+
+	for i := 0; i < flag.NArg(); i++ {
+		err := textOutput(w, *profile, flag.Arg(i))
+		if err != nil {
+			log.Fatalf("%v\n", err)
+		}
+	}
+}
+
+func findProfile() (string, error) {
+	d, err := os.Getwd()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "cover: %v\n", err)
-		os.Exit(2)
+		return "", err
 	}
+	filename := "go.cover"
+
+	for {
+		fn := filepath.Join(d, filename)
+		info, err := os.Stat(fn)
+		if !os.IsNotExist(err) && !info.IsDir() {
+			return fn, nil
+		}
+		dd := filepath.Dir(d)
+		if dd == d {
+			break
+		}
+		d = dd
+	}
+	return "", fmt.Errorf("go.cover file not found")
 }

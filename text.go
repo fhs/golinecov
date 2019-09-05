@@ -5,22 +5,17 @@
 package main
 
 import (
-	"bufio"
-	"bytes"
 	"fmt"
-	"html/template"
 	"io"
 	"io/ioutil"
 	"math"
-	"os"
-	"path/filepath"
 	"strings"
 )
 
-// htmlOutput reads the profile data from profile and generates an HTML
+// textOutput reads the profile data from profile and generates an HTML
 // coverage report, writing it to outfile. If outfile is empty,
 // it writes the report to a temporary file and opens it in a web browser.
-func htmlOutput(profile, outfile string) error {
+func textOutput(w io.Writer, profile, gofile string) error {
 	profiles, err := ParseProfiles(profile)
 	if err != nil {
 		return err
@@ -35,6 +30,9 @@ func htmlOutput(profile, outfile string) error {
 
 	for _, profile := range profiles {
 		fn := profile.FileName
+		if gofile != "" && fn != gofile {
+			continue
+		}
 		if profile.Mode == "set" {
 			d.Set = true
 		}
@@ -47,40 +45,36 @@ func htmlOutput(profile, outfile string) error {
 			return fmt.Errorf("can't read %q: %v", fn, err)
 		}
 		var buf strings.Builder
-		err = htmlGen(&buf, src, profile.Boundaries(src))
-		if err != nil {
-			return err
+		if *showSource {
+			err = textGen(&buf, src, profile.Boundaries(src))
+			if err != nil {
+				return err
+			}
 		}
 		d.Files = append(d.Files, &templateFile{
 			Name:     fn,
-			Body:     template.HTML(buf.String()),
+			Body:     buf.String(),
 			Coverage: percentCovered(profile),
 		})
 	}
+	if len(d.Files) == 0 {
+		return fmt.Errorf("no coverage profile found for file %q", gofile)
+	}
 
-	var out *os.File
-	if outfile == "" {
-		var dir string
-		dir, err = ioutil.TempDir("", "cover")
+	for _, file := range d.Files {
+		if *showSource {
+			_, err = io.WriteString(w, file.Body)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(w, "\n")
+		}
+		_, err = fmt.Fprintf(w, "%5.1f%% %v\n", file.Coverage, file.Name)
 		if err != nil {
 			return err
 		}
-		out, err = os.Create(filepath.Join(dir, "coverage.html"))
-	} else {
-		out, err = os.Create(outfile)
 	}
-	if err != nil {
-		return err
-	}
-	err = htmlTemplate.Execute(out, d)
-	if err2 := out.Close(); err == nil {
-		err = err2
-	}
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return err
 }
 
 // percentCovered returns, as a percentage, the fraction of the statements in
@@ -100,38 +94,51 @@ func percentCovered(p *Profile) float64 {
 	return float64(covered) / float64(total) * 100
 }
 
-// htmlGen generates an HTML coverage report with the provided filename,
+func printLine(w io.Writer, minCount int, line string) {
+	if minCount == -1 {
+		fmt.Fprintf(w, "   - %s", line)
+	} else {
+		fmt.Fprintf(w, "%4d %s", minCount, line)
+	}
+}
+
+// textGen generates an HTML coverage report with the provided filename,
 // source code, and tokens, and writes it to the given Writer.
-func htmlGen(w io.Writer, src []byte, boundaries []Boundary) error {
-	dst := bufio.NewWriter(w)
+func textGen(w io.Writer, src []byte, boundaries []Boundary) error {
+	bcount := -1
+	minCount := -1
+	var line []byte
 	for i := range src {
 		for len(boundaries) > 0 && boundaries[0].Offset == i {
 			b := boundaries[0]
 			if b.Start {
-				n := 0
-				if b.Count > 0 {
-					n = int(math.Floor(b.Norm*9)) + 1
+				if *norm {
+					bcount = 0
+					if b.Count > 0 {
+						bcount = int(math.Floor(b.Norm*9)) + 1
+					}
+				} else {
+					bcount = b.Count
 				}
-				fmt.Fprintf(dst, `<span class="cov%v" title="%v">`, n, b.Count)
 			} else {
-				dst.WriteString("</span>")
+				bcount = -1
 			}
 			boundaries = boundaries[1:]
 		}
-		switch b := src[i]; b {
-		case '>':
-			dst.WriteString("&gt;")
-		case '<':
-			dst.WriteString("&lt;")
-		case '&':
-			dst.WriteString("&amp;")
-		case '\t':
-			dst.WriteString("        ")
-		default:
-			dst.WriteByte(b)
+		line = append(line, src[i])
+		if src[i] == '\n' {
+			printLine(w, minCount, string(line))
+			line = nil
+			minCount = bcount
+		} else if minCount == -1 || bcount < minCount {
+			minCount = bcount
 		}
 	}
-	return dst.Flush()
+	if len(line) > 0 {
+		printLine(w, minCount, string(line))
+		line = nil
+	}
+	return nil
 }
 
 // rgb returns an rgb value for the specified coverage value
@@ -147,19 +154,6 @@ func rgb(n int) string {
 	return fmt.Sprintf("rgb(%v, %v, %v)", r, g, b)
 }
 
-// colors generates the CSS rules for coverage colors.
-func colors() template.CSS {
-	var buf bytes.Buffer
-	for i := 0; i < 11; i++ {
-		fmt.Fprintf(&buf, ".cov%v { color: %v }\n", i, rgb(i))
-	}
-	return template.CSS(buf.String())
-}
-
-var htmlTemplate = template.Must(template.New("html").Funcs(template.FuncMap{
-	"colors": colors,
-}).Parse(tmplHTML))
-
 type templateData struct {
 	Files []*templateFile
 	Set   bool
@@ -167,111 +161,6 @@ type templateData struct {
 
 type templateFile struct {
 	Name     string
-	Body     template.HTML
+	Body     string
 	Coverage float64
 }
-
-const tmplHTML = `
-<!DOCTYPE html>
-<html>
-	<head>
-		<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
-		<style>
-			body {
-				background: black;
-				color: rgb(80, 80, 80);
-			}
-			body, pre, #legend span {
-				font-family: Menlo, monospace;
-				font-weight: bold;
-			}
-			#topbar {
-				background: black;
-				position: fixed;
-				top: 0; left: 0; right: 0;
-				height: 42px;
-				border-bottom: 1px solid rgb(80, 80, 80);
-			}
-			#content {
-				margin-top: 50px;
-			}
-			#nav, #legend {
-				float: left;
-				margin-left: 10px;
-			}
-			#legend {
-				margin-top: 12px;
-			}
-			#nav {
-				margin-top: 10px;
-			}
-			#legend span {
-				margin: 0 5px;
-			}
-			{{colors}}
-		</style>
-	</head>
-	<body>
-		<div id="topbar">
-			<div id="nav">
-				<select id="files">
-				{{range $i, $f := .Files}}
-				<option value="file{{$i}}">{{$f.Name}} ({{printf "%.1f" $f.Coverage}}%)</option>
-				{{end}}
-				</select>
-			</div>
-			<div id="legend">
-				<span>not tracked</span>
-			{{if .Set}}
-				<span class="cov0">not covered</span>
-				<span class="cov8">covered</span>
-			{{else}}
-				<span class="cov0">no coverage</span>
-				<span class="cov1">low coverage</span>
-				<span class="cov2">*</span>
-				<span class="cov3">*</span>
-				<span class="cov4">*</span>
-				<span class="cov5">*</span>
-				<span class="cov6">*</span>
-				<span class="cov7">*</span>
-				<span class="cov8">*</span>
-				<span class="cov9">*</span>
-				<span class="cov10">high coverage</span>
-			{{end}}
-			</div>
-		</div>
-		<div id="content">
-		{{range $i, $f := .Files}}
-		<pre class="file" id="file{{$i}}" style="display: none">{{$f.Body}}</pre>
-		{{end}}
-		</div>
-	</body>
-	<script>
-	(function() {
-		var files = document.getElementById('files');
-		var visible;
-		files.addEventListener('change', onChange, false);
-		function select(part) {
-			if (visible)
-				visible.style.display = 'none';
-			visible = document.getElementById(part);
-			if (!visible)
-				return;
-			files.value = part;
-			visible.style.display = 'block';
-			location.hash = part;
-		}
-		function onChange() {
-			select(files.value);
-			window.scrollTo(0, 0);
-		}
-		if (location.hash != "") {
-			select(location.hash.substr(1));
-		}
-		if (!visible) {
-			select("file0");
-		}
-	})();
-	</script>
-</html>
-`
