@@ -96,9 +96,9 @@ func percentCovered(p *Profile) float64 {
 
 func printLine(w io.Writer, minCount int, line string) {
 	if minCount == -1 {
-		fmt.Fprintf(w, "   - %s", line)
+		fmt.Fprintf(w, "%*s %s", *width, "-", line)
 	} else {
-		fmt.Fprintf(w, "%4d %s", minCount, line)
+		fmt.Fprintf(w, "%*d %s", *width, minCount, line)
 	}
 }
 
