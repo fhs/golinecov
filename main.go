@@ -49,7 +49,7 @@ var (
 	funcOut    = flag.Bool("func", false, "output coverage profile information for a function or method")
 	norm       = flag.Bool("norm", false, "normalize count to [0, 10]")
 	showSource = flag.Bool("src", false, "show source code annotated with coverage per line")
-	width      = flag.Int("w", 4, "count is formatted with given width")
+	width      = flag.Int("w", 5, "count is formatted with given width")
 )
 
 func main() {
